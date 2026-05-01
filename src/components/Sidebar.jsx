@@ -1,23 +1,131 @@
 import { NavLink, useNavigate } from "react-router-dom";
 
+/**
+ * Sidebar menu list.
+ *
+ * key = menu permission key
+ * permission = backend permission name if you later use permission strings
+ *
+ * Hidden now:
+ * - Case Inbox
+ * - System Settings
+ */
+const SIDEBAR_ITEMS = [
+  {
+    key: "dashboard",
+    to: "/dashboard",
+    label: "Dashboard",
+    permission: "dashboard.view",
+    icon: <IconDashboard />,
+  },
+  {
+    key: "cases",
+    to: "/dashboard/cases",
+    label: "Case Management",
+    permission: "cases.view",
+    icon: <IconCases />,
+  },
+  {
+    key: "users",
+    to: "/dashboard/users",
+    label: "Users & Roles",
+    permission: "users.view",
+    icon: <IconUsers />,
+  },
+  {
+    key: "follow-up",
+    to: "/dashboard/follow-up",
+    label: "Case Follow-Up",
+    permission: "follow_up.view",
+    icon: <IconCheck />,
+  },
+  {
+    key: "appointments",
+    to: "/dashboard/appointments",
+    label: "Appointments",
+    permission: "appointments.view",
+    icon: <IconCalendar />,
+  },
+  {
+    key: "service-directory",
+    to: "/dashboard/service-directory",
+    label: "Service Directory",
+    permission: "service_directory.view",
+    icon: <IconPin />,
+  },
+  {
+    key: "reports",
+    to: "/dashboard/reports",
+    label: "Reports & Statistics",
+    permission: "reports.view",
+    icon: <IconChart />,
+  },
+];
+
+/**
+ * Temporary fallback access by role.
+ *
+ * Later, admin can control these from backend.
+ * When backend sends menu permissions, those permissions will override this.
+ *
+ * Hidden now:
+ * - inbox
+ * - settings
+ */
+const ROLE_DEFAULT_MENUS = {
+  admin: "all",
+
+  haguruka_staff: [
+    "dashboard",
+    "cases",
+    "follow-up",
+    "appointments",
+    "service-directory",
+    "reports",
+  ],
+
+  police: [
+    "dashboard",
+    "cases",
+    "follow-up",
+  ],
+
+  health_officer: [
+    "dashboard",
+    "cases",
+    "appointments",
+    "service-directory",
+  ],
+
+  local_leader: [
+    "dashboard",
+    "cases",
+    "follow-up",
+    "service-directory",
+  ],
+};
+
 export default function Sidebar({ open = true }) {
   const nav = useNavigate();
 
   const logout = () => {
-    // remove auth from both stores
     localStorage.removeItem("auth_token");
     localStorage.removeItem("auth_user");
+
     sessionStorage.removeItem("auth_token");
     sessionStorage.removeItem("auth_user");
 
     nav("/", { replace: true });
   };
 
-  const user =
-    JSON.parse(localStorage.getItem("auth_user") || sessionStorage.getItem("auth_user") || "{}") ||
-    {};
-  const name = user?.name || "The Admin";
-  const email = user?.email || "admin@haguruka.rw";
+  const user = getStoredUser();
+
+  const name = user?.name || "User";
+  const email = user?.email || "user@haguruka.rw";
+  const roleSlug = getRoleSlug(user);
+  const roleName = getRoleName(user);
+
+  const visibleItems = SIDEBAR_ITEMS.filter((item) => canSeeMenu(user, item));
 
   return (
     <aside
@@ -30,35 +138,60 @@ export default function Sidebar({ open = true }) {
       {/* Brand */}
       <div className="px-4 py-4 border-b border-white/15 flex items-center gap-3">
         <div className="w-11 h-11 rounded-xl bg-white/90 grid place-items-center overflow-hidden">
-          <img src="/log.png" alt="Haguruka" className="w-8 h-8 object-contain" />
+          <img
+            src="/log.png"
+            alt="Haguruka"
+            className="w-8 h-8 object-contain"
+          />
         </div>
 
         {open ? (
           <div className="min-w-0">
             <div className="font-extrabold truncate">Haguruka App</div>
-            <div className="text-xs text-white/80">Admin Panel</div>
+            <div className="text-xs text-white/80">Dashboard Panel</div>
           </div>
         ) : null}
       </div>
 
+      {/* Role Badge */}
+      {open ? (
+        <div className="px-4 py-3 border-b border-white/15">
+          <div className="rounded-xl bg-white/10 border border-white/15 px-3 py-2">
+            <div className="text-[11px] uppercase tracking-wide text-white/70">
+              Logged in as
+            </div>
+
+            <div className="font-bold text-sm truncate">
+              {roleName || roleSlug || "User"}
+            </div>
+          </div>
+        </div>
+      ) : null}
+
       {/* Nav */}
       <nav className="px-3 py-3 space-y-1 flex-1 overflow-y-auto">
-        <Item open={open} to="/dashboard" label="Dashboard" icon={<IconDashboard />} />
-        <Item open={open} to="/dashboard/cases" label="Case Management" icon={<IconCases />} />
-        <Item open={open} to="/dashboard/users" label="Users & Roles" icon={<IconUsers />} />
-        <Item open={open} to="/dashboard/inbox" label="Case Inbox" icon={<IconInbox />} />
-        <Item open={open} to="/dashboard/follow-up" label="Case Follow-Up" icon={<IconCheck />} />
-        <Item open={open} to="/dashboard/appointments" label="Appointments" icon={<IconCalendar />} />
-        <Item open={open} to="/dashboard/service-directory" label="Service Directory" icon={<IconPin />} />
-        <Item open={open} to="/dashboard/reports" label="Reports & Statistics" icon={<IconChart />} />
-        <Item open={open} to="/dashboard/settings" label="System Settings" icon={<IconSettings />} />
+        {visibleItems.length > 0 ? (
+          visibleItems.map((item) => (
+            <Item
+              key={item.key}
+              open={open}
+              to={item.to}
+              label={item.label}
+              icon={item.icon}
+            />
+          ))
+        ) : (
+          <div className="px-3 py-4 text-sm text-white/75">
+            {open ? "No menu assigned to this user." : "—"}
+          </div>
+        )}
       </nav>
 
       {/* User + Logout */}
       <div className="border-t border-white/15 p-4">
         <div className="flex items-center gap-3">
           <div className="w-10 h-10 rounded-full bg-white/15 grid place-items-center font-extrabold">
-            {(name?.[0] || "T").toUpperCase()}
+            {(name?.[0] || "U").toUpperCase()}
           </div>
 
           {open ? (
@@ -100,30 +233,215 @@ function Item({ to, label, icon, open }) {
       }
       title={open ? "" : label}
     >
-      <span className="w-9 h-9 rounded-lg bg-white/10 grid place-items-center">
+      <span className="w-9 h-9 rounded-lg bg-white/10 grid place-items-center shrink-0">
         {icon}
       </span>
+
       {open ? <span className="truncate">{label}</span> : null}
     </NavLink>
   );
 }
 
-/* ---------------- Icons (simple SVG) ---------------- */
+/* ---------------- Auth + Permission Helpers ---------------- */
+
+function getStoredUser() {
+  try {
+    const rawUser =
+      localStorage.getItem("auth_user") ||
+      sessionStorage.getItem("auth_user") ||
+      "{}";
+
+    return JSON.parse(rawUser) || {};
+  } catch (error) {
+    console.error("Invalid auth_user in storage:", error);
+    return {};
+  }
+}
+
+function getRoleSlug(user) {
+  if (!user) return "";
+
+  if (typeof user.role === "string") {
+    return normalize(user.role);
+  }
+
+  if (user.role?.slug) {
+    return normalize(user.role.slug);
+  }
+
+  if (user.role_slug) {
+    return normalize(user.role_slug);
+  }
+
+  if (Array.isArray(user.roles) && user.roles.length > 0) {
+    const firstRole = user.roles[0];
+
+    if (typeof firstRole === "string") {
+      return normalize(firstRole);
+    }
+
+    if (firstRole?.slug) {
+      return normalize(firstRole.slug);
+    }
+  }
+
+  return "";
+}
+
+function getRoleName(user) {
+  if (!user) return "";
+
+  if (typeof user.role === "string") {
+    return user.role;
+  }
+
+  if (user.role?.name) {
+    return user.role.name;
+  }
+
+  if (Array.isArray(user.roles) && user.roles.length > 0) {
+    const firstRole = user.roles[0];
+
+    if (typeof firstRole === "string") {
+      return firstRole;
+    }
+
+    if (firstRole?.name) {
+      return firstRole.name;
+    }
+  }
+
+  return user.role_name || getRoleSlug(user);
+}
+
+function isAdmin(user) {
+  const roleSlug = getRoleSlug(user);
+
+  if (roleSlug === "admin") return true;
+
+  if (Array.isArray(user?.roles)) {
+    return user.roles.some((role) => {
+      if (typeof role === "string") return normalize(role) === "admin";
+      return normalize(role?.slug) === "admin";
+    });
+  }
+
+  return false;
+}
+
+function canSeeMenu(user, item) {
+  if (!user || !item) return false;
+
+  // Admin sees all items that still exist in SIDEBAR_ITEMS.
+  // Case Inbox and System Settings are removed from SIDEBAR_ITEMS,
+  // so even admin will not see them.
+  if (isAdmin(user)) return true;
+
+  const explicitMenus = getExplicitMenuAccess(user);
+
+  /**
+   * If backend/admin sends menu permissions,
+   * use those permissions as the main source of truth.
+   */
+  if (explicitMenus.length > 0) {
+    return explicitMenus.some((permission) => {
+      const value = normalize(permission);
+
+      return (
+        value === normalize(item.key) ||
+        value === normalize(item.to) ||
+        value === normalize(item.permission) ||
+        value === normalize(item.label)
+      );
+    });
+  }
+
+  /**
+   * Fallback role-based menu.
+   * This is useful before you build admin permission management page.
+   */
+  const roleSlug = getRoleSlug(user);
+  const defaultMenus = ROLE_DEFAULT_MENUS[roleSlug];
+
+  if (defaultMenus === "all") return true;
+
+  if (Array.isArray(defaultMenus)) {
+    return defaultMenus.includes(item.key);
+  }
+
+  // If role is unknown, only show dashboard
+  return item.key === "dashboard";
+}
+
+function getExplicitMenuAccess(user) {
+  const sources = [
+    user?.sidebar_menus,
+    user?.allowed_menus,
+    user?.menu_permissions,
+    user?.permissions,
+    user?.role?.sidebar_menus,
+    user?.role?.allowed_menus,
+    user?.role?.menu_permissions,
+    user?.role?.permissions,
+  ];
+
+  const result = [];
+
+  sources.forEach((source) => {
+    if (!source) return;
+
+    if (Array.isArray(source)) {
+      source.forEach((item) => {
+        if (typeof item === "string") {
+          result.push(item);
+          return;
+        }
+
+        if (item?.key) result.push(item.key);
+        if (item?.slug) result.push(item.slug);
+        if (item?.name) result.push(item.name);
+        if (item?.path) result.push(item.path);
+        if (item?.permission) result.push(item.permission);
+      });
+    }
+  });
+
+  return result;
+}
+
+function normalize(value) {
+  return String(value || "")
+    .trim()
+    .toLowerCase()
+    .replaceAll("_", "-");
+}
+
+/* ---------------- Icons ---------------- */
 
 function IconDashboard() {
   return (
     <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
-      <path d="M4 13h7V4H4v9Zm9 7h7V11h-7v9ZM4 20h7v-5H4v5Zm9-9h7V4h-7v7Z" fill="currentColor" />
+      <path
+        d="M4 13h7V4H4v9Zm9 7h7V11h-7v9ZM4 20h7v-5H4v5Zm9-9h7V4h-7v7Z"
+        fill="currentColor"
+      />
     </svg>
   );
 }
+
 function IconCases() {
   return (
     <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
-      <path d="M6 7h12M6 12h12M6 17h8" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+      <path
+        d="M6 7h12M6 12h12M6 17h8"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+      />
     </svg>
   );
 }
+
 function IconUsers() {
   return (
     <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
@@ -142,31 +460,20 @@ function IconUsers() {
     </svg>
   );
 }
-function IconInbox() {
-  return (
-    <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
-      <path
-        d="M4 4h16v12H4V4Z"
-        stroke="currentColor"
-        strokeWidth="2"
-        strokeLinejoin="round"
-      />
-      <path
-        d="M4 16l4 4h8l4-4"
-        stroke="currentColor"
-        strokeWidth="2"
-        strokeLinejoin="round"
-      />
-    </svg>
-  );
-}
+
 function IconCheck() {
   return (
     <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
-      <path d="M20 6 9 17l-5-5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+      <path
+        d="M20 6 9 17l-5-5"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+      />
     </svg>
   );
 }
+
 function IconCalendar() {
   return (
     <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
@@ -179,6 +486,7 @@ function IconCalendar() {
     </svg>
   );
 }
+
 function IconPin() {
   return (
     <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
@@ -195,39 +503,59 @@ function IconPin() {
     </svg>
   );
 }
+
 function IconChart() {
   return (
     <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
-      <path d="M4 19V5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
-      <path d="M8 19V11" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
-      <path d="M12 19V8" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
-      <path d="M16 19V13" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
-      <path d="M20 19V6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+      <path
+        d="M4 19V5"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+      />
+      <path
+        d="M8 19V11"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+      />
+      <path
+        d="M12 19V8"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+      />
+      <path
+        d="M16 19V13"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+      />
+      <path
+        d="M20 19V6"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+      />
     </svg>
   );
 }
-function IconSettings() {
-  return (
-    <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
-      <path
-        d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z"
-        stroke="currentColor"
-        strokeWidth="2"
-      />
-      <path
-        d="M19.4 15a7.9 7.9 0 0 0 .1-2l2-1.2-2-3.5-2.2.6a8 8 0 0 0-1.7-1l-.3-2.3H10.7l-.3 2.3a8 8 0 0 0-1.7 1l-2.2-.6-2 3.5 2 1.2a7.9 7.9 0 0 0 .1 2l-2 1.2 2 3.5 2.2-.6a8 8 0 0 0 1.7 1l.3 2.3h3.6l.3-2.3a8 8 0 0 0 1.7-1l2.2.6 2-3.5-2-1.2Z"
-        stroke="currentColor"
-        strokeWidth="2"
-        strokeLinejoin="round"
-      />
-    </svg>
-  );
-}
+
 function IconLogout() {
   return (
     <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
-      <path d="M10 17l5-5-5-5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
-      <path d="M15 12H3" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+      <path
+        d="M10 17l5-5-5-5"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+      />
+      <path
+        d="M15 12H3"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+      />
       <path
         d="M21 4v16"
         stroke="currentColor"

@@ -11,30 +11,123 @@ export default function Home() {
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState("");
 
-  // ✅ API base (best: set VITE_API_URL in .env)
+  // ✅ Support your .env name: VITE_API_BASE_URL
+  // ✅ Also support old name: VITE_API_URL
   const API = useMemo(() => {
-    const envApi = import.meta.env.VITE_API_URL;
-    if (envApi) return envApi;
+    const envApi =
+      import.meta.env.VITE_API_BASE_URL ||
+      import.meta.env.VITE_API_URL;
 
-    if (import.meta.env.DEV) return "http://127.0.0.1:8000/api";
+    if (envApi) return envApi.replace(/\/$/, "");
+
+    if (import.meta.env.DEV) {
+      return "http://127.0.0.1:8000/api";
+    }
+
     return `${window.location.origin}/api`;
   }, []);
 
-  // ✅ If backend sends role, you can route per role here
   const routeForRole = (roleSlug) => {
     const map = {
       admin: "/dashboard",
       haguruka_staff: "/dashboard",
       police: "/dashboard",
-      health_isange: "/dashboard",
-      local_authority: "/dashboard",
-      analyst: "/dashboard",
+      health_officer: "/dashboard",
+      local_leader: "/dashboard",
     };
+
     return map[roleSlug] || "/dashboard";
+  };
+
+  const normalizeRoleSlug = (value) => {
+    return String(value || "")
+      .trim()
+      .toLowerCase()
+      .replaceAll("_", "-");
+  };
+
+  const getPrimaryRole = (user) => {
+    if (!user) return null;
+
+    if (user.role && typeof user.role === "object") {
+      return user.role;
+    }
+
+    if (typeof user.role === "string") {
+      return {
+        name: user.role,
+        slug: normalizeRoleSlug(user.role),
+      };
+    }
+
+    if (Array.isArray(user.roles) && user.roles.length > 0) {
+      const adminRole = user.roles.find((role) => {
+        if (typeof role === "string") {
+          return normalizeRoleSlug(role) === "admin";
+        }
+
+        return normalizeRoleSlug(role?.slug) === "admin";
+      });
+
+      const selectedRole = adminRole || user.roles[0];
+
+      if (typeof selectedRole === "string") {
+        return {
+          name: selectedRole,
+          slug: normalizeRoleSlug(selectedRole),
+        };
+      }
+
+      return selectedRole;
+    }
+
+    if (user.role_slug) {
+      return {
+        name: user.role_name || user.role_slug,
+        slug: user.role_slug,
+      };
+    }
+
+    return null;
+  };
+
+  const buildAuthUser = (payload) => {
+    const backendUser = payload?.user || payload || {};
+
+    const primaryRole = getPrimaryRole(backendUser);
+    const roleSlug = primaryRole?.slug || backendUser?.role_slug || "";
+    const roleName = primaryRole?.name || backendUser?.role_name || roleSlug;
+
+    const isAdmin =
+      normalizeRoleSlug(roleSlug) === "admin" ||
+      backendUser?.is_admin === true ||
+      backendUser?.isAdmin === true ||
+      (Array.isArray(backendUser.roles) &&
+        backendUser.roles.some((role) => {
+          if (typeof role === "string") {
+            return normalizeRoleSlug(role) === "admin";
+          }
+
+          return normalizeRoleSlug(role?.slug) === "admin";
+        }));
+
+    return {
+      ...backendUser,
+
+      // ✅ easy values for frontend
+      role: primaryRole,
+      role_slug: roleSlug,
+      role_name: roleName,
+      is_admin: isAdmin,
+
+      // ✅ keep email from form if backend does not return it
+      email: backendUser?.email || email,
+    };
   };
 
   const onSubmit = async (e) => {
     e.preventDefault();
+
     setErr("");
     setLoading(true);
 
@@ -47,7 +140,10 @@ export default function Home() {
           "Content-Type": "application/json",
           Accept: "application/json",
         },
-        body: JSON.stringify({ email, password }),
+        body: JSON.stringify({
+          email,
+          password,
+        }),
       });
 
       const data = await res.json().catch(() => ({}));
@@ -58,25 +154,32 @@ export default function Home() {
           data?.error ||
           data?.data?.error ||
           "Login failed. Check your email and password.";
+
         throw new Error(msg);
       }
 
       const payload = data?.data ?? data ?? {};
       const token = payload?.token;
-      const name = payload?.name || payload?.user?.name || "User";
-      const role = payload?.role || payload?.user?.role || payload?.role_slug;
 
-      if (!token) throw new Error("Login succeeded but token is missing.");
+      if (!token) {
+        throw new Error("Login succeeded but token is missing.");
+      }
+
+      const authUser = buildAuthUser(payload);
 
       const storage = remember ? localStorage : sessionStorage;
 
-      storage.setItem("auth_token", token);
-      storage.setItem(
-        "auth_user",
-        JSON.stringify({ name, email, role: role || null })
-      );
+      // ✅ clear old wrong storage first
+      localStorage.removeItem("auth_token");
+      localStorage.removeItem("auth_user");
+      sessionStorage.removeItem("auth_token");
+      sessionStorage.removeItem("auth_user");
 
-      nav(routeForRole(role), { replace: true });
+      // ✅ save full user, including roles array
+      storage.setItem("auth_token", token);
+      storage.setItem("auth_user", JSON.stringify(authUser));
+
+      nav(routeForRole(authUser.role_slug), { replace: true });
     } catch (e2) {
       setErr(e2?.message || "Something went wrong.");
     } finally {
@@ -117,9 +220,18 @@ export default function Home() {
           </p>
 
           <div className="mt-8 space-y-4">
-            <Feature icon={<UserShieldIcon />} text="A safe space to report violence." />
-            <Feature icon={<MegaphoneIcon />} text="Report violence safely and get support." />
-            <Feature icon={<LockIcon />} text="Your information is confidential." />
+            <Feature
+              icon={<UserShieldIcon />}
+              text="A safe space to report violence."
+            />
+            <Feature
+              icon={<MegaphoneIcon />}
+              text="Report violence safely and get support."
+            />
+            <Feature
+              icon={<LockIcon />}
+              text="Your information is confidential."
+            />
           </div>
         </div>
 
@@ -129,12 +241,13 @@ export default function Home() {
             <h2 className="text-2xl font-extrabold text-slate-900">
               Welcome Back
             </h2>
+
             <div className="w-14 h-1 bg-teal-600 rounded-full mt-3" />
+
             <p className="text-sm text-slate-500 mt-3">
               Please enter your credentials to continue
             </p>
 
-            {/* Error */}
             {err ? (
               <div className="mt-5 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm font-semibold text-red-700">
                 {err}
@@ -147,10 +260,12 @@ export default function Home() {
                 <label className="text-xs font-bold text-slate-800">
                   Email Address
                 </label>
+
                 <div className="mt-2 relative">
                   <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400">
                     <MailIcon />
                   </span>
+
                   <input
                     className="w-full rounded-xl border border-slate-200 bg-white px-10 py-3 text-sm outline-none focus:border-teal-400 focus:ring-4 focus:ring-teal-100"
                     type="email"
@@ -169,6 +284,7 @@ export default function Home() {
                   <label className="text-xs font-bold text-slate-800">
                     Password
                   </label>
+
                   <button
                     type="button"
                     className="text-xs font-bold text-teal-700 hover:underline"
@@ -182,6 +298,7 @@ export default function Home() {
                   <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400">
                     <KeyIcon />
                   </span>
+
                   <input
                     className="w-full rounded-xl border border-slate-200 bg-white px-10 py-3 text-sm outline-none focus:border-teal-400 focus:ring-4 focus:ring-teal-100"
                     type="password"
@@ -225,7 +342,6 @@ export default function Home() {
                 </button>
               </div>
 
-              {/* API hint (optional, remove if you want) */}
               <div className="text-center text-[11px] text-slate-400">
                 API: <span className="font-bold text-slate-500">{API}</span>
               </div>
@@ -245,6 +361,7 @@ function Feature({ icon, text }) {
       <div className="w-10 h-10 rounded-full bg-white/15 grid place-items-center">
         {icon}
       </div>
+
       <div className="text-sm text-white/90">{text}</div>
     </div>
   );
@@ -280,9 +397,24 @@ function KeyIcon() {
         strokeWidth="2"
         strokeLinecap="round"
       />
-      <path d="M14 11l7 0" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
-      <path d="M18 11v3" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
-      <path d="M21 11v2" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+      <path
+        d="M14 11l7 0"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+      />
+      <path
+        d="M18 11v3"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+      />
+      <path
+        d="M21 11v2"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+      />
     </svg>
   );
 }
@@ -343,7 +475,12 @@ function MegaphoneIcon() {
         strokeWidth="2"
         strokeLinecap="round"
       />
-      <path d="M7 16l1 5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+      <path
+        d="M7 16l1 5"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+      />
     </svg>
   );
 }

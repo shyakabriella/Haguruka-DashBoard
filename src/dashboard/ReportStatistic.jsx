@@ -1,218 +1,300 @@
-import { useEffect, useMemo, useState } from "react";
+import { useRef, useState } from "react";
+import html2canvas from "html2canvas";
+import { jsPDF } from "jspdf";
 
-/**
- * Reports & Statistics (Demo UI)
- * Later connect API, example:
- *   GET /api/reports/summary?from=YYYY-MM-DD&to=YYYY-MM-DD
- *   GET /api/reports/by-district?from=...&to=...
- *   GET /api/reports/trend?from=...&to=...
- */
+const RAW_API_BASE =
+  import.meta.env.VITE_API_URL ||
+  import.meta.env.VITE_API_BASE_URL ||
+  "http://127.0.0.1:8000";
 
-const TYPE_OPTIONS = [
-  "Domestic Violence",
-  "Sexual Violence",
-  "Child Abuse",
-  "Psychological Abuse",
-  "Other",
+const CLEAN_RAW_API_BASE = RAW_API_BASE.replace(/\/+$/, "");
+
+const API_BASE = CLEAN_RAW_API_BASE.endsWith("/api")
+  ? CLEAN_RAW_API_BASE
+  : `${CLEAN_RAW_API_BASE}/api`;
+
+const REPORT_TYPES = [
+  { value: "summary", label: "All Case Reports List" },
+  { value: "district", label: "District Case Reports List" },
+  { value: "case_type", label: "Case Type Reports List" },
+  { value: "status", label: "Case Status Reports List" },
+  { value: "channel", label: "Reporting Channel Reports List" },
+  { value: "urgent", label: "Urgent Cases List" },
+  { value: "follow_up", label: "Follow-Up Tasks List" },
+  { value: "appointments", label: "Appointments List" },
 ];
 
-const CHANNELS = ["USSD", "SMS", "Mobile App", "Web"];
-const STATUSES = ["open", "pending", "escalated", "closed"];
+const CASE_TYPES = [
+  { value: "all", label: "All" },
+  { value: "physical", label: "Physical Abuse" },
+  { value: "sexual", label: "Sexual Abuse" },
+  { value: "emotional", label: "Emotional Abuse" },
+  { value: "economic", label: "Economic Abuse" },
+  { value: "child", label: "Child Abuse" },
+  { value: "emergency", label: "Emergency" },
+  { value: "other", label: "Other" },
+];
+
+const STATUSES = [
+  { value: "all", label: "All" },
+  { value: "submitted", label: "Submitted" },
+  { value: "pending", label: "Pending" },
+  { value: "under_review", label: "Under Review" },
+  { value: "in_progress", label: "In Progress" },
+  { value: "resolved", label: "Resolved" },
+  { value: "closed", label: "Closed" },
+  { value: "rejected", label: "Rejected" },
+  { value: "withdrawn", label: "Withdrawn" },
+];
+
+const CHANNELS = [
+  { value: "all", label: "All" },
+  { value: "text", label: "Text" },
+  { value: "media", label: "Media" },
+  { value: "audio", label: "Audio" },
+  { value: "quick_emergency", label: "Quick Emergency" },
+];
+
+function getToken() {
+  return (
+    localStorage.getItem("auth_token") ||
+    sessionStorage.getItem("auth_token") ||
+    localStorage.getItem("token") ||
+    sessionStorage.getItem("token") ||
+    localStorage.getItem("access_token") ||
+    sessionStorage.getItem("access_token") ||
+    localStorage.getItem("authToken") ||
+    sessionStorage.getItem("authToken") ||
+    ""
+  );
+}
+
+function authHeaders() {
+  const token = getToken();
+
+  return {
+    Accept: "application/json",
+    "Content-Type": "application/json",
+    ...(token ? { Authorization: `Bearer ${token}` } : {}),
+  };
+}
 
 export default function ReportStatistic() {
-  const [range, setRange] = useState("30"); // 7, 30, 90
+  const reportRef = useRef(null);
+
+  const [range, setRange] = useState("30");
+  const [reportType, setReportType] = useState("summary");
   const [type, setType] = useState("all");
   const [status, setStatus] = useState("all");
   const [channel, setChannel] = useState("all");
 
-  const [loading, setLoading] = useState(true);
-  const [incidents, setIncidents] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [pdfLoading, setPdfLoading] = useState(false);
+  const [error, setError] = useState("");
+  const [report, setReport] = useState(null);
 
-  // ---------- Demo data ----------
-  useEffect(() => {
-    setLoading(true);
+  const fetchReport = async () => {
+    try {
+      setLoading(true);
+      setError("");
 
-    // generate demo incidents across last 90 days
-    const today = new Date();
-    const pick = (arr) => arr[Math.floor(Math.random() * arr.length)];
-    const districts = ["Kigali", "Muhanga", "Bugesera", "Rusizi", "Kamonyi", "Huye", "Musanze"];
+      const params = new URLSearchParams();
+      params.set("range", range);
+      params.set("report_type", reportType);
+      params.set("type", type);
+      params.set("status", status);
+      params.set("channel", channel);
 
-    const demo = Array.from({ length: 140 }).map((_, i) => {
-      const daysAgo = Math.floor(Math.random() * 90);
-      const d = new Date(today);
-      d.setDate(today.getDate() - daysAgo);
+      const response = await fetch(
+        `${API_BASE}/reports/summary?${params.toString()}`,
+        {
+          method: "GET",
+          headers: authHeaders(),
+        }
+      );
 
-      const st = pick(STATUSES);
-      const isUrgent = Math.random() < 0.22;
-      const isAnonymous = Math.random() < 0.55;
+      const result = await response.json().catch(() => ({}));
 
-      return {
-        id: i + 1,
-        created_at: d.toISOString().slice(0, 10),
-        type: pick(TYPE_OPTIONS),
-        channel: pick(CHANNELS),
-        status: st,
-        district: pick(districts),
-        urgency: isUrgent ? "high" : "normal",
-        anonymous: isAnonymous,
-      };
-    });
+      if (!response.ok || result?.success === false) {
+        throw new Error(result?.message || "Failed to generate report.");
+      }
 
-    const t = setTimeout(() => {
-      setIncidents(demo);
+      setReport(normalizeReport(result.data));
+    } catch (err) {
+      setError(err?.message || "Something went wrong while generating report.");
+      setReport(null);
+    } finally {
       setLoading(false);
-    }, 250);
-
-    return () => clearTimeout(t);
-  }, []);
-
-  // ---------- Filter window ----------
-  const filtered = useMemo(() => {
-    const days = Number(range);
-    const to = new Date();
-    const from = new Date();
-    from.setDate(to.getDate() - days);
-
-    return incidents.filter((x) => {
-      const dt = new Date(x.created_at);
-      const inRange = dt >= from && dt <= to;
-
-      const matchType = type === "all" || x.type === type;
-      const matchStatus = status === "all" || x.status === status;
-      const matchChannel = channel === "all" || x.channel === channel;
-
-      return inRange && matchType && matchStatus && matchChannel;
-    });
-  }, [incidents, range, type, status, channel]);
-
-  // ---------- KPIs ----------
-  const kpis = useMemo(() => {
-    const total = filtered.length;
-    const open = filtered.filter((x) => x.status === "open").length;
-    const pending = filtered.filter((x) => x.status === "pending").length;
-    const escalated = filtered.filter((x) => x.status === "escalated").length;
-    const closed = filtered.filter((x) => x.status === "closed").length;
-    const urgent = filtered.filter((x) => x.urgency === "high").length;
-    const anonymous = filtered.filter((x) => x.anonymous).length;
-
-    return { total, open, pending, escalated, closed, urgent, anonymous };
-  }, [filtered]);
-
-  // ---------- Breakdown helpers ----------
-  const countBy = (arr, key) => {
-    const m = new Map();
-    for (const item of arr) {
-      const v = item[key] ?? "Unknown";
-      m.set(v, (m.get(v) || 0) + 1);
     }
-    return [...m.entries()].sort((a, b) => b[1] - a[1]);
   };
 
-  const byStatus = useMemo(() => countBy(filtered, "status"), [filtered]);
-  const byChannel = useMemo(() => countBy(filtered, "channel"), [filtered]);
-  const byType = useMemo(() => countBy(filtered, "type"), [filtered]);
-  const byDistrict = useMemo(() => countBy(filtered, "district"), [filtered]);
-
-  // ---------- Trend (daily counts) ----------
-  const trend = useMemo(() => {
-    // last N days, build day buckets
-    const days = Number(range);
-    const to = new Date();
-    const from = new Date();
-    from.setDate(to.getDate() - days);
-
-    const fmt = (d) => d.toISOString().slice(0, 10);
-    const buckets = new Map();
-
-    for (let i = 0; i <= days; i++) {
-      const d = new Date(from);
-      d.setDate(from.getDate() + i);
-      buckets.set(fmt(d), 0);
-    }
-
-    for (const x of filtered) {
-      const k = x.created_at;
-      if (buckets.has(k)) buckets.set(k, buckets.get(k) + 1);
-    }
-
-    const labels = [...buckets.keys()];
-    const values = labels.map((k) => buckets.get(k));
-    return { labels, values };
-  }, [filtered, range]);
+  const rows = getRowsByReportType(report, reportType);
 
   const exportCSV = () => {
-    const rows = [
-      ["id", "created_at", "type", "channel", "status", "district", "urgency", "anonymous"],
-      ...filtered.map((x) => [
-        x.id,
-        x.created_at,
-        x.type,
-        x.channel,
-        x.status,
-        x.district,
-        x.urgency,
-        x.anonymous ? "yes" : "no",
-      ]),
-    ];
+    if (!report) return;
 
-    const csv = rows.map((r) => r.map(escapeCSV).join(",")).join("\n");
+    const csvRows = buildCsvRows(reportType, rows);
+    const csv = csvRows.map((row) => row.map(escapeCSV).join(",")).join("\n");
+
     const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
     const url = URL.createObjectURL(blob);
 
     const a = document.createElement("a");
     a.href = url;
-    a.download = `reports_${new Date().toISOString().slice(0, 10)}.csv`;
+    a.download = `${safeFileName(report.title)}_${new Date()
+      .toISOString()
+      .slice(0, 10)}.csv`;
     a.click();
 
     URL.revokeObjectURL(url);
   };
 
+  const exportPDF = async () => {
+    if (!reportRef.current || !report) return;
+
+    try {
+      setPdfLoading(true);
+      setError("");
+
+      const canvas = await html2canvas(reportRef.current, {
+        scale: 2,
+        useCORS: true,
+        backgroundColor: "#ffffff",
+        windowWidth: reportRef.current.scrollWidth,
+      });
+
+      const imgData = canvas.toDataURL("image/png");
+
+      const pdf = new jsPDF("p", "mm", "a4");
+      const pdfWidth = pdf.internal.pageSize.getWidth();
+      const pdfHeight = pdf.internal.pageSize.getHeight();
+
+      const imgWidth = pdfWidth;
+      const imgHeight = (canvas.height * imgWidth) / canvas.width;
+
+      let heightLeft = imgHeight;
+      let position = 0;
+
+      pdf.addImage(imgData, "PNG", 0, position, imgWidth, imgHeight);
+      heightLeft -= pdfHeight;
+
+      while (heightLeft > 0) {
+        position = heightLeft - imgHeight;
+        pdf.addPage();
+        pdf.addImage(imgData, "PNG", 0, position, imgWidth, imgHeight);
+        heightLeft -= pdfHeight;
+      }
+
+      pdf.save(
+        `${safeFileName(report.title)}_${new Date()
+          .toISOString()
+          .slice(0, 10)}.pdf`
+      );
+    } catch (err) {
+      setError(err?.message || "Could not generate PDF.");
+    } finally {
+      setPdfLoading(false);
+    }
+  };
+
   return (
     <div className="space-y-6">
-      {/* Header */}
       <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
         <div>
           <h1 className="text-xl md:text-2xl font-extrabold text-slate-900">
-            Reports & Statistics
+            Reports
           </h1>
+
           <p className="text-sm text-slate-500 mt-1">
-            Track incidents, escalations, and reporting trends 📈
+            Generate list-based reports and export them as PDF or CSV.
+          </p>
+
+          <p className="text-xs text-slate-400 mt-1">
+            Data source:{" "}
+            <span className="font-bold">GET {API_BASE}/reports/summary</span>
           </p>
         </div>
 
-        <button
-          onClick={exportCSV}
-          className="px-4 py-2 rounded-xl border border-slate-200 hover:bg-slate-50 font-extrabold text-sm"
-        >
-          Export CSV
-        </button>
+        <div className="flex flex-col sm:flex-row gap-2">
+          <button
+            onClick={fetchReport}
+            disabled={loading}
+            className="px-4 py-2 rounded-xl bg-slate-900 hover:bg-black text-white font-extrabold text-sm disabled:opacity-60"
+          >
+            {loading ? "Generating..." : "Generate Report"}
+          </button>
+
+          <button
+            onClick={exportCSV}
+            disabled={!report || loading}
+            className="px-4 py-2 rounded-xl border border-slate-200 hover:bg-slate-50 font-extrabold text-sm disabled:opacity-60"
+          >
+            Export CSV
+          </button>
+
+          <button
+            onClick={exportPDF}
+            disabled={!report || loading || pdfLoading}
+            className="px-4 py-2 rounded-xl bg-teal-700 hover:bg-teal-800 text-white font-extrabold text-sm disabled:opacity-60"
+          >
+            {pdfLoading ? "Generating PDF..." : "Generate PDF"}
+          </button>
+        </div>
       </div>
 
-      {/* Filters */}
+      {error ? (
+        <div className="rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm font-semibold text-red-700">
+          {error}
+        </div>
+      ) : null}
+
       <div className="bg-white rounded-2xl border border-slate-200 p-4">
-        <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
+        <div className="grid grid-cols-1 md:grid-cols-5 gap-3">
+          <Select label="Report Type">
+            <select
+              value={reportType}
+              onChange={(e) => {
+                setReportType(e.target.value);
+                setReport(null);
+              }}
+              className="mt-2 w-full rounded-xl border border-slate-200 px-4 py-2 text-sm bg-white outline-none focus:border-teal-400 focus:ring-4 focus:ring-teal-100"
+            >
+              {REPORT_TYPES.map((item) => (
+                <option key={item.value} value={item.value}>
+                  {item.label}
+                </option>
+              ))}
+            </select>
+          </Select>
+
           <Select label="Range">
             <select
               value={range}
-              onChange={(e) => setRange(e.target.value)}
+              onChange={(e) => {
+                setRange(e.target.value);
+                setReport(null);
+              }}
               className="mt-2 w-full rounded-xl border border-slate-200 px-4 py-2 text-sm bg-white outline-none focus:border-teal-400 focus:ring-4 focus:ring-teal-100"
             >
               <option value="7">Last 7 days</option>
               <option value="30">Last 30 days</option>
               <option value="90">Last 90 days</option>
+              <option value="365">Last 1 year</option>
             </select>
           </Select>
 
-          <Select label="Type">
+          <Select label="Case Type">
             <select
               value={type}
-              onChange={(e) => setType(e.target.value)}
+              onChange={(e) => {
+                setType(e.target.value);
+                setReport(null);
+              }}
               className="mt-2 w-full rounded-xl border border-slate-200 px-4 py-2 text-sm bg-white outline-none focus:border-teal-400 focus:ring-4 focus:ring-teal-100"
             >
-              <option value="all">All</option>
-              {TYPE_OPTIONS.map((t) => (
-                <option key={t} value={t}>
-                  {t}
+              {CASE_TYPES.map((item) => (
+                <option key={item.value} value={item.value}>
+                  {item.label}
                 </option>
               ))}
             </select>
@@ -221,13 +303,15 @@ export default function ReportStatistic() {
           <Select label="Status">
             <select
               value={status}
-              onChange={(e) => setStatus(e.target.value)}
+              onChange={(e) => {
+                setStatus(e.target.value);
+                setReport(null);
+              }}
               className="mt-2 w-full rounded-xl border border-slate-200 px-4 py-2 text-sm bg-white outline-none focus:border-teal-400 focus:ring-4 focus:ring-teal-100"
             >
-              <option value="all">All</option>
-              {STATUSES.map((s) => (
-                <option key={s} value={s}>
-                  {capitalize(s)}
+              {STATUSES.map((item) => (
+                <option key={item.value} value={item.value}>
+                  {item.label}
                 </option>
               ))}
             </select>
@@ -236,13 +320,15 @@ export default function ReportStatistic() {
           <Select label="Channel">
             <select
               value={channel}
-              onChange={(e) => setChannel(e.target.value)}
+              onChange={(e) => {
+                setChannel(e.target.value);
+                setReport(null);
+              }}
               className="mt-2 w-full rounded-xl border border-slate-200 px-4 py-2 text-sm bg-white outline-none focus:border-teal-400 focus:ring-4 focus:ring-teal-100"
             >
-              <option value="all">All</option>
-              {CHANNELS.map((c) => (
-                <option key={c} value={c}>
-                  {c}
+              {CHANNELS.map((item) => (
+                <option key={item.value} value={item.value}>
+                  {item.label}
                 </option>
               ))}
             </select>
@@ -250,159 +336,188 @@ export default function ReportStatistic() {
         </div>
       </div>
 
-      {/* KPI Cards */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
-        <Kpi title="Total Reports" value={kpis.total} />
-        <Kpi title="Open" value={kpis.open} />
-        <Kpi title="Escalated" value={kpis.escalated} />
-        <Kpi title="Urgent" value={kpis.urgent} />
-        <Kpi title="Pending" value={kpis.pending} />
-        <Kpi title="Closed" value={kpis.closed} />
-        <Kpi title="Anonymous" value={kpis.anonymous} />
-        <Kpi title="Non-anonymous" value={Math.max(0, kpis.total - kpis.anonymous)} />
-      </div>
+      {!report && !loading ? (
+        <div className="rounded-2xl border border-blue-200 bg-blue-50 p-5">
+          <div className="font-extrabold text-blue-950">
+            Select filters, then click “Generate Report”.
+          </div>
+          <p className="text-sm text-blue-700 mt-1">
+            The generated report will show a list/table, not statistics.
+          </p>
+        </div>
+      ) : null}
 
-      {/* Trend + Breakdown */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-        {/* Trend */}
-        <div className="lg:col-span-2 bg-white rounded-2xl border border-slate-200 overflow-hidden">
-          <div className="p-4 border-b border-slate-200 flex items-center justify-between">
-            <div className="font-extrabold text-slate-900">Trend (Daily Reports)</div>
-            <div className="text-xs text-slate-500 font-semibold">
-              {loading ? "Loading..." : `${trend.values.reduce((a, b) => a + b, 0)} reports`}
+      {loading ? (
+        <div className="bg-white rounded-2xl border border-slate-200 p-6 text-sm text-slate-500">
+          Generating report...
+        </div>
+      ) : null}
+
+      {!loading && report ? (
+        <div
+          ref={reportRef}
+          className="bg-white rounded-2xl border border-slate-200 overflow-hidden"
+        >
+          <div className="p-6 border-b border-slate-200">
+            <div className="text-xs font-black tracking-[0.25em] text-teal-700 uppercase">
+              Haguruka App
+            </div>
+
+            <h2 className="mt-2 text-2xl font-black text-slate-900">
+              {report.title}
+            </h2>
+
+            <div className="mt-2 grid grid-cols-1 sm:grid-cols-4 gap-3 text-xs text-slate-500">
+              <div>
+                <b>Period:</b> {report.filters.from} to {report.filters.to}
+              </div>
+
+              <div>
+                <b>Generated:</b> {formatDateTime(report.generated_at)}
+              </div>
+
+              <div>
+                <b>Report Type:</b> {reportTypeLabel(report.report_type)}
+              </div>
+
+              <div>
+                <b>Total Records:</b> {rows.length}
+              </div>
             </div>
           </div>
 
-          <div className="p-4">
-            {loading ? (
-              <div className="text-sm text-slate-500">Loading chart...</div>
-            ) : (
-              <TrendChart values={trend.values} />
-            )}
+          <div className="p-6">
+            <ReportListTable reportType={reportType} rows={rows} />
           </div>
         </div>
-
-        {/* Quick breakdown */}
-        <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
-          <div className="p-4 border-b border-slate-200 font-extrabold text-slate-900">
-            Status Breakdown
-          </div>
-          <div className="p-4 space-y-3">
-            {loading ? (
-              <div className="text-sm text-slate-500">Loading...</div>
-            ) : (
-              <BreakdownList rows={byStatus} total={kpis.total} />
-            )}
-          </div>
-        </div>
-      </div>
-
-      {/* More breakdowns */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-        <Panel title="Channel Breakdown">
-          {loading ? (
-            <div className="text-sm text-slate-500">Loading...</div>
-          ) : (
-            <BreakdownList rows={byChannel} total={kpis.total} />
-          )}
-        </Panel>
-
-        <Panel title="Top Incident Types">
-          {loading ? (
-            <div className="text-sm text-slate-500">Loading...</div>
-          ) : (
-            <BreakdownList rows={byType.slice(0, 6)} total={kpis.total} />
-          )}
-        </Panel>
-
-        <Panel title="Top Districts">
-          {loading ? (
-            <div className="text-sm text-slate-500">Loading...</div>
-          ) : (
-            <div className="space-y-2">
-              {byDistrict.slice(0, 6).map(([name, count]) => (
-                <div
-                  key={name}
-                  className="flex items-center justify-between rounded-xl border border-slate-200 px-3 py-2"
-                >
-                  <div className="font-bold text-slate-900">{name}</div>
-                  <div className="text-sm font-extrabold text-teal-700">{count}</div>
-                </div>
-              ))}
-            </div>
-          )}
-        </Panel>
-      </div>
-
-      {/* Table */}
-      <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
-        <div className="p-4 border-b border-slate-200 flex items-center justify-between">
-          <div className="font-extrabold text-slate-900">District Summary</div>
-          <div className="text-xs text-slate-500 font-semibold">
-            {loading ? "" : `Showing ${Math.min(byDistrict.length, 10)} districts`}
-          </div>
-        </div>
-
-        <div className="overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead className="bg-slate-50 text-slate-600">
-              <tr className="text-left">
-                <th className="p-4 font-bold">District</th>
-                <th className="p-4 font-bold">Reports</th>
-                <th className="p-4 font-bold">Share</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-100">
-              {loading ? (
-                <tr>
-                  <td className="p-6 text-slate-500" colSpan={3}>
-                    Loading...
-                  </td>
-                </tr>
-              ) : byDistrict.length === 0 ? (
-                <tr>
-                  <td className="p-6 text-slate-500" colSpan={3}>
-                    No data in selected filters.
-                  </td>
-                </tr>
-              ) : (
-                byDistrict.slice(0, 10).map(([name, count]) => {
-                  const pct = kpis.total ? Math.round((count / kpis.total) * 100) : 0;
-                  return (
-                    <tr key={name} className="hover:bg-slate-50/60">
-                      <td className="p-4 font-extrabold text-slate-900">{name}</td>
-                      <td className="p-4 text-slate-700">{count}</td>
-                      <td className="p-4">
-                        <div className="flex items-center gap-3">
-                          <div className="flex-1 h-2 rounded-full bg-slate-100 overflow-hidden">
-                            <div
-                              className="h-full bg-teal-700"
-                              style={{ width: `${pct}%` }}
-                            />
-                          </div>
-                          <div className="text-xs font-extrabold text-slate-700 w-10 text-right">
-                            {pct}%
-                          </div>
-                        </div>
-                      </td>
-                    </tr>
-                  );
-                })
-              )}
-            </tbody>
-          </table>
-        </div>
-      </div>
-
-      {/* Footer note */}
-      <div className="text-xs text-slate-400">
-        Demo data only. Next step: connect to Laravel API endpoints to load real analytics ✅
-      </div>
+      ) : null}
     </div>
   );
 }
 
-/* ---------------- Small Components ---------------- */
+/* ---------------- Main List Table ---------------- */
+
+function ReportListTable({ reportType, rows }) {
+  if (!rows || rows.length === 0) {
+    return (
+      <div className="rounded-2xl border border-slate-200 bg-slate-50 p-6 text-sm text-slate-500">
+        No records found for the selected filters.
+      </div>
+    );
+  }
+
+  if (reportType === "follow_up") {
+    return (
+      <Table>
+        <thead className="bg-slate-50 text-slate-600">
+          <tr className="text-left">
+            <Th>No</Th>
+            <Th>Task Code</Th>
+            <Th>Case</Th>
+            <Th>Title</Th>
+            <Th>Priority</Th>
+            <Th>Status</Th>
+            <Th>Assigned To</Th>
+            <Th>Due Date</Th>
+            <Th>Completed</Th>
+          </tr>
+        </thead>
+
+        <tbody className="divide-y divide-slate-100">
+          {rows.map((row, index) => (
+            <tr key={row.id || index}>
+              <Td>{index + 1}</Td>
+              <Td>{row.task_code}</Td>
+              <Td>{row.case_code}</Td>
+              <Td>{row.title}</Td>
+              <Td>{row.priority}</Td>
+              <Td>{row.status}</Td>
+              <Td>{row.assigned_to}</Td>
+              <Td>{row.due_date || "N/A"}</Td>
+              <Td>{formatDateTime(row.completed_at)}</Td>
+            </tr>
+          ))}
+        </tbody>
+      </Table>
+    );
+  }
+
+  if (reportType === "appointments") {
+    return (
+      <Table>
+        <thead className="bg-slate-50 text-slate-600">
+          <tr className="text-left">
+            <Th>No</Th>
+            <Th>Appointment</Th>
+            <Th>Case</Th>
+            <Th>Client</Th>
+            <Th>Type</Th>
+            <Th>Status</Th>
+            <Th>District</Th>
+            <Th>Assigned To</Th>
+            <Th>Scheduled</Th>
+          </tr>
+        </thead>
+
+        <tbody className="divide-y divide-slate-100">
+          {rows.map((row, index) => (
+            <tr key={row.id || index}>
+              <Td>{index + 1}</Td>
+              <Td>{row.appointment_code}</Td>
+              <Td>{row.case_code}</Td>
+              <Td>{row.client_name}</Td>
+              <Td>{row.type}</Td>
+              <Td>{row.status}</Td>
+              <Td>{row.district}</Td>
+              <Td>{row.assigned_to}</Td>
+              <Td>{formatDateTime(row.scheduled_at)}</Td>
+            </tr>
+          ))}
+        </tbody>
+      </Table>
+    );
+  }
+
+  return (
+    <Table>
+      <thead className="bg-slate-50 text-slate-600">
+        <tr className="text-left">
+          <Th>No</Th>
+          <Th>Case Code</Th>
+          <Th>Reporter</Th>
+          <Th>Phone</Th>
+          <Th>Case Type</Th>
+          <Th>Status</Th>
+          <Th>Urgency</Th>
+          <Th>Channel</Th>
+          <Th>District</Th>
+          <Th>Evidence</Th>
+          <Th>Created</Th>
+        </tr>
+      </thead>
+
+      <tbody className="divide-y divide-slate-100">
+        {rows.map((row, index) => (
+          <tr key={row.id || index}>
+            <Td>{index + 1}</Td>
+            <Td>{row.case_code}</Td>
+            <Td>{row.reporter_name}</Td>
+            <Td>{row.reporter_phone || "N/A"}</Td>
+            <Td>{row.case_type}</Td>
+            <Td>{row.status}</Td>
+            <Td>{row.urgency}</Td>
+            <Td>{row.channel}</Td>
+            <Td>{row.district || "Unknown"}</Td>
+            <Td>{row.evidence_count}</Td>
+            <Td>{formatDateTime(row.created_at)}</Td>
+          </tr>
+        ))}
+      </tbody>
+    </Table>
+  );
+}
+
+/* ---------------- UI Components ---------------- */
 
 function Select({ label, children }) {
   return (
@@ -413,113 +528,174 @@ function Select({ label, children }) {
   );
 }
 
-function Kpi({ title, value }) {
+function Table({ children }) {
   return (
-    <div className="bg-white rounded-2xl border border-slate-200 p-4">
-      <div className="text-xs font-bold text-slate-500">{title}</div>
-      <div className="mt-1 text-2xl font-black text-slate-900">{value}</div>
+    <div className="overflow-x-auto rounded-2xl border border-slate-200">
+      <table className="w-full text-sm">{children}</table>
     </div>
   );
 }
 
-function Panel({ title, children }) {
-  return (
-    <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
-      <div className="p-4 border-b border-slate-200 font-extrabold text-slate-900">
-        {title}
-      </div>
-      <div className="p-4">{children}</div>
-    </div>
-  );
+function Th({ children }) {
+  return <th className="p-3 font-bold whitespace-nowrap">{children}</th>;
 }
 
-function BreakdownList({ rows, total }) {
-  return (
-    <div className="space-y-2">
-      {rows.map(([name, count]) => {
-        const pct = total ? Math.round((count / total) * 100) : 0;
-        return (
-          <div key={name} className="space-y-1">
-            <div className="flex items-center justify-between">
-              <div className="text-sm font-bold text-slate-900">{capitalize(String(name))}</div>
-              <div className="text-xs font-extrabold text-slate-700">
-                {count} • {pct}%
-              </div>
-            </div>
-            <div className="h-2 rounded-full bg-slate-100 overflow-hidden">
-              <div className="h-full bg-teal-700" style={{ width: `${pct}%` }} />
-            </div>
-          </div>
-        );
-      })}
-    </div>
-  );
+function Td({ children }) {
+  return <td className="p-3 text-slate-700 whitespace-nowrap">{children}</td>;
 }
 
-function TrendChart({ values }) {
-  const w = 900;
-  const h = 180;
-  const pad = 10;
+/* ---------------- Data Helpers ---------------- */
 
-  const max = Math.max(1, ...values);
-  const stepX = values.length > 1 ? (w - pad * 2) / (values.length - 1) : 0;
+function getRowsByReportType(report, reportType) {
+  if (!report) return [];
 
-  const points = values
-    .map((v, i) => {
-      const x = pad + i * stepX;
-      const y = h - pad - (v / max) * (h - pad * 2);
-      return `${x},${y}`;
-    })
-    .join(" ");
+  if (reportType === "follow_up") {
+    return report.follow_up_rows || [];
+  }
 
-  const last = values[values.length - 1] || 0;
+  if (reportType === "appointments") {
+    return report.appointment_rows || [];
+  }
 
-  return (
-    <div className="space-y-3">
-      <div className="flex items-center justify-between">
-        <div className="text-sm font-extrabold text-slate-900">
-          Latest day: <span className="text-teal-700">{last}</span> reports
-        </div>
-        <div className="text-xs text-slate-500 font-semibold">Simple SVG trend</div>
-      </div>
+  if (reportType === "urgent") {
+    return (report.case_rows || []).filter((item) =>
+      ["high", "urgent"].includes(String(item.urgency).toLowerCase())
+    );
+  }
 
-      <div className="rounded-2xl border border-slate-200 bg-white p-3">
-        <svg viewBox={`0 0 ${w} ${h}`} className="w-full h-[180px]">
-          <polyline
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="4"
-            className="text-teal-700"
-            points={points}
-            strokeLinejoin="round"
-            strokeLinecap="round"
-          />
-          {/* baseline */}
-          <line
-            x1="0"
-            y1={h - pad}
-            x2={w}
-            y2={h - pad}
-            stroke="rgba(148,163,184,0.35)"
-            strokeWidth="2"
-          />
-        </svg>
-      </div>
-    </div>
-  );
+  return report.case_rows || [];
+}
+
+function normalizeReport(data) {
+  return {
+    title: data?.title || "Report",
+    report_type: data?.report_type || "summary",
+    generated_at: data?.generated_at || null,
+    filters: data?.filters || {},
+    case_rows: Array.isArray(data?.case_rows) ? data.case_rows : [],
+    follow_up_rows: Array.isArray(data?.follow_up_rows)
+      ? data.follow_up_rows
+      : [],
+    appointment_rows: Array.isArray(data?.appointment_rows)
+      ? data.appointment_rows
+      : [],
+  };
+}
+
+function buildCsvRows(reportType, rows) {
+  if (reportType === "follow_up") {
+    return [
+      [
+        "no",
+        "task_code",
+        "case_code",
+        "title",
+        "priority",
+        "status",
+        "assigned_to",
+        "due_date",
+        "completed_at",
+      ],
+      ...rows.map((row, index) => [
+        index + 1,
+        row.task_code,
+        row.case_code,
+        row.title,
+        row.priority,
+        row.status,
+        row.assigned_to,
+        row.due_date,
+        row.completed_at,
+      ]),
+    ];
+  }
+
+  if (reportType === "appointments") {
+    return [
+      [
+        "no",
+        "appointment_code",
+        "case_code",
+        "client_name",
+        "type",
+        "status",
+        "district",
+        "assigned_to",
+        "scheduled_at",
+      ],
+      ...rows.map((row, index) => [
+        index + 1,
+        row.appointment_code,
+        row.case_code,
+        row.client_name,
+        row.type,
+        row.status,
+        row.district,
+        row.assigned_to,
+        row.scheduled_at,
+      ]),
+    ];
+  }
+
+  return [
+    [
+      "no",
+      "case_code",
+      "reporter_name",
+      "reporter_phone",
+      "case_type",
+      "status",
+      "urgency",
+      "channel",
+      "district",
+      "evidence_count",
+      "created_at",
+    ],
+    ...rows.map((row, index) => [
+      index + 1,
+      row.case_code,
+      row.reporter_name,
+      row.reporter_phone,
+      row.case_type,
+      row.status,
+      row.urgency,
+      row.channel,
+      row.district,
+      row.evidence_count,
+      row.created_at,
+    ]),
+  ];
 }
 
 /* ---------------- Helpers ---------------- */
 
-function capitalize(s) {
-  if (!s) return "";
-  return s.charAt(0).toUpperCase() + s.slice(1);
+function reportTypeLabel(value) {
+  return REPORT_TYPES.find((item) => item.value === value)?.label || value;
 }
 
-function escapeCSV(v) {
-  const s = String(v ?? "");
-  if (s.includes(",") || s.includes('"') || s.includes("\n")) {
-    return `"${s.replaceAll('"', '""')}"`;
+function formatDateTime(value) {
+  if (!value) return "N/A";
+
+  const date = new Date(value);
+
+  if (Number.isNaN(date.getTime())) return value;
+
+  return date.toLocaleString();
+}
+
+function escapeCSV(value) {
+  const safe = String(value ?? "");
+
+  if (safe.includes(",") || safe.includes('"') || safe.includes("\n")) {
+    return `"${safe.replaceAll('"', '""')}"`;
   }
-  return s;
+
+  return safe;
+}
+
+function safeFileName(value) {
+  return String(value || "report")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "");
 }
